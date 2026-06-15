@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Get-ChildItem -Recurse -Force | Select-Object -ExpandProperty FullName | Sort-Object\")",
+      "PowerShell(gh auth *)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "hostinger-mcp"
+  ]
+}

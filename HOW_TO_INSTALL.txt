@@ -1,0 +1,44 @@
+============================================================
+  Smart Paper Checker  —  Installation Guide
+============================================================
+
+TO INSTALL (you or your teachers):
+  1. Double-click  SmartPaperChecker_Setup.exe
+  2. Click "Yes" if Windows asks for permission.
+  3. Follow the wizard (Next → Install → Finish).
+  4. The app appears on the Desktop and in the Start Menu
+     with the blue "Smart Paper Checker" logo.
+
+That's it. No Python, no setup, no API key needed by the
+teacher — everything is built in.
+
+WHAT GETS INSTALLED:
+  - Program:   C:\Program Files\SmartPaperChecker\
+  - Your data: C:\Users\<you>\AppData\Local\SmartPaperChecker\
+               (database, uploaded papers, reports, logs)
+
+TO SHARE WITH A TEACHER:
+  Just send them the single file:
+      installer_output\SmartPaperChecker_Setup.exe
+  They run it and they're done.
+
+TO UNINSTALL:
+  Settings → Apps → Smart Paper Checker → Uninstall
+  (or use the Uninstall shortcut in the Start Menu folder).
+
+FIRST USE:
+  1. Click "Create Account" → make a Teacher account
+     (password: 8+ chars, 1 uppercase, 1 lowercase, 1 number)
+  2. Sign in → "Upload Paper" → add a Question Paper + Answer
+     Key (.docx works best) → "Create Paper & Save".
+  3. Create a Student account → "Submit Answer" → choose the
+     paper, upload the answer sheet → "Submit & Grade with AI".
+  4. The AI grades it automatically and shows the result.
+
+NOTE: The AI grading key is bundled inside the app so it works
+out of the box. If you ever need to change the model or key,
+create a file named ".env" inside
+   C:\Users\<you>\AppData\Local\SmartPaperChecker\
+with NVIDIA_API_KEY / NVIDIA_MODEL lines — it overrides the
+built-in one.
+============================================================

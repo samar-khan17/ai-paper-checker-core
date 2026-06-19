@@ -84,30 +84,118 @@ Grade this answer and return ONLY this JSON:
 
 class NvidiaGrader:
     def __init__(self):
-        self.available = bool(NVIDIA_API_KEY)
-        self.client = None
-        
-        if self.available:
+        self._apply_settings()
+
+    def _apply_settings(self):
+        """Read the live, teacher-editable settings and (re)build the clients.
+        Supports TWO API keys for automatic failover, plus a fast backup model.
+        Falls back to the .env values bundled at config import time."""
+        try:
+            import core.settings_store as ss
+            s = ss.load(force=True)
+        except Exception as e:
+            logger.error(f"settings load failed ({e}); using .env values.")
+            s = {}
+
+        self.api_key      = (s.get("api_key")      or NVIDIA_API_KEY      or "").strip()
+        self.api_key2     = (s.get("api_key2")     or "").strip()
+        self.base_url     = (s.get("base_url")     or NVIDIA_BASE_URL).strip()
+        self.model        = (s.get("model")        or NVIDIA_MODEL).strip()
+        self.fast_model   = (s.get("fast_model")   or "meta/llama-3.1-8b-instruct").strip()
+        self.vision_model = (s.get("vision_model") or NVIDIA_VISION_MODEL).strip()
+        try:
+            self.temperature = float(s.get("temperature", AI_TEMPERATURE))
+        except (TypeError, ValueError):
+            self.temperature = AI_TEMPERATURE
+        self.language = s.get("language", "Auto (detect)")
+
+        # Build one client per available key. Key 1 is primary, Key 2 is backup.
+        self.clients = []   # list of (label, OpenAI client)
+        for label, key in [("key1", self.api_key), ("key2", self.api_key2)]:
+            if not key:
+                continue
             try:
-                self.client = OpenAI(
-                    base_url=NVIDIA_BASE_URL,
-                    api_key=NVIDIA_API_KEY,
-                    timeout=90.0,      # generous, but never hang forever
-                    max_retries=0      # one attempt; fall back rather than double the wait
-                )
-                logger.info(f"NVIDIA NIM connected. Model: {NVIDIA_MODEL}")
+                self.clients.append((label, OpenAI(
+                    base_url=self.base_url, api_key=key,
+                    timeout=45.0, max_retries=0)))
             except Exception as e:
-                logger.error(f"NVIDIA client init failed: {e}")
-                self.available = False
+                logger.error(f"client init failed for {label}: {e}")
+
+        self.available = bool(self.clients)
+        self.client = self.clients[0][1] if self.clients else None  # back-compat
+        if self.available:
+            logger.info(f"NVIDIA NIM ready with {len(self.clients)} key(s). "
+                        f"Model: {self.model} | fast backup: {self.fast_model}")
         else:
-            logger.warning("NVIDIA_API_KEY not found. Using keyword fallback.")
+            logger.warning("No API key set. Using keyword fallback.")
+
+    def _chat(self, messages, model=None, max_tokens=800, temperature=None,
+              timeout=45.0, top_p=0.9, allow_fast_fallback=True, prefer_fast=False):
+        """Resilient chat call. Tries every API key in turn; if the primary model
+        keeps failing/timing out, retries with the fast backup model (text only).
+        prefer_fast=True puts the fast model FIRST (used when the slow model is known
+        to be congested, to keep total time bounded). Raises if all fail."""
+        if not self.clients:
+            raise RuntimeError("No API client available (no key configured).")
+        model = model or self.model
+        temp = self.temperature if temperature is None else temperature
+
+        primary = [(model, c, lbl) for (lbl, c) in self.clients]
+        fast = []
+        if self.fast_model and self.fast_model != model:
+            fast = [(self.fast_model, c, lbl + "+fast") for (lbl, c) in self.clients]
+        if prefer_fast and fast:
+            attempts = fast + primary
+        elif allow_fast_fallback:
+            attempts = primary + fast
+        else:
+            attempts = primary
+
+        last_err = None
+        for mdl, client, lbl in attempts:
+            try:
+                return client.chat.completions.create(
+                    model=mdl, messages=messages, temperature=temp,
+                    max_tokens=max_tokens, top_p=top_p, timeout=timeout)
+            except Exception as e:
+                last_err = e
+                logger.warning(f"chat failed [{lbl} {mdl}]: {repr(e)[:90]}")
+                continue
+        raise last_err or RuntimeError("All chat attempts failed.")
+
+    def reconfigure(self):
+        """Call after the teacher saves new settings — rebuilds the clients live."""
+        self._apply_settings()
+        return self.available
+
+    def test_connection(self):
+        """Quick round-trip so the teacher can verify their key(s)/model work.
+        Returns (ok: bool, message: str)."""
+        if not self.clients:
+            return False, "No API key entered."
+        try:
+            self._chat([{"role": "user", "content": "Reply with the single word OK."}],
+                       max_tokens=5, timeout=30.0, allow_fast_fallback=False)
+            n = len(self.clients)
+            return True, (f"Connected. Model '{self.model}' responded successfully."
+                          + (f"  ({n} keys active — automatic backup ON.)" if n > 1 else ""))
+        except Exception as e:
+            return False, f"Connection failed: {e}"
+
+    def _lang_rule(self) -> str:
+        lang = (self.language or "Auto (detect)")
+        if lang.lower().startswith("auto"):
+            return ("LANGUAGE: The answer may be in English, Urdu, or Roman Urdu. "
+                    "Read and grade it correctly regardless of language or script.\n")
+        return (f"LANGUAGE: Answers are expected in {lang}. Read and grade {lang} "
+                f"(including its script) correctly.\n")
 
     # ── PUBLIC METHODS ────────────────────────────────────────
 
     def grade_single_answer(self, qnum: int, question: str, model_answer: str,
                              student_answer: str, max_marks: int, subject: str,
                              marking_notes: str = "Standard marking applies.",
-                             mode: str = "normal") -> dict:
+                             mode: str = "normal", prefer_fast: bool = False) -> dict:
         """Grade one answer. Returns structured result dict."""
 
         if not student_answer or not student_answer.strip():
@@ -115,7 +203,8 @@ class NvidiaGrader:
 
         if self.available and self.client:
             result = self._nvidia_grade(qnum, question, model_answer, student_answer,
-                                        max_marks, subject, marking_notes, mode)
+                                        max_marks, subject, marking_notes, mode,
+                                        prefer_fast=prefer_fast)
             if result:
                 return result
 
@@ -144,6 +233,10 @@ class NvidiaGrader:
         if self.available and self.client and questions:
             batch = self._nvidia_grade_batch(questions, answer_key, student_answers, subject, mode) or {}
 
+        # If the batch returned NOTHING, the accurate model is congested/down right now.
+        # Per-question grading then prefers the FAST model first, so we never wait minutes.
+        batch_failed_entirely = (len(batch) == 0)
+
         for q in questions:
             qnum = q["number"]
             max_marks = q.get("marks", 10)
@@ -158,7 +251,8 @@ class NvidiaGrader:
                 # missing from batch (or batch failed) → grade this one on its own
                 result = self.grade_single_answer(
                     qnum, question_text, model_answer,
-                    student_ans, max_marks, subject, marking_notes, mode)
+                    student_ans, max_marks, subject, marking_notes, mode,
+                    prefer_fast=batch_failed_entirely)
 
             result["max_marks"] = max_marks
             result["score"] = max(0, min(result.get("score", 0), max_marks))
@@ -237,10 +331,11 @@ class NvidiaGrader:
                 content.append({"type": "image_url",
                                 "image_url": {"url": f"data:image/{mime};base64,{b64}"}})
 
-            resp = self.client.chat.completions.create(
-                model=NVIDIA_VISION_MODEL,
-                messages=[{"role": "user", "content": content}],
-                temperature=0.0, max_tokens=1500, timeout=90.0
+            resp = self._chat(
+                [{"role": "user", "content": content}],
+                model=self.vision_model,
+                temperature=0.0, max_tokens=1500, timeout=70.0,
+                allow_fast_fallback=False   # vision can't run on the text backup model
             )
             raw = resp.choices[0].message.content.strip()
             raw = re.sub(r'^```json\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
@@ -271,10 +366,11 @@ class NvidiaGrader:
                 mime = "jpeg" if ext in ("jpg", "jpeg") else ext
                 content.append({"type": "image_url",
                                 "image_url": {"url": f"data:image/{mime};base64,{b64}"}})
-            resp = self.client.chat.completions.create(
-                model=NVIDIA_VISION_MODEL,
-                messages=[{"role": "user", "content": content}],
-                temperature=0.0, max_tokens=max_tokens, timeout=90.0)
+            resp = self._chat(
+                [{"role": "user", "content": content}],
+                model=self.vision_model,
+                temperature=0.0, max_tokens=max_tokens, timeout=70.0,
+                allow_fast_fallback=False)
             raw = resp.choices[0].message.content.strip()
             raw = re.sub(r'^```json\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
             m = re.search(r'(\{.*\}|\[.*\])', raw, re.DOTALL)
@@ -300,6 +396,24 @@ class NvidiaGrader:
                 except (ValueError, TypeError):
                     continue
         return sorted(out, key=lambda x: x["number"])
+
+    def extract_student_info(self, image_paths: list) -> dict:
+        """Read the header of a student answer sheet to get name, roll, section."""
+        data = self._vision_json(
+            image_paths[:1],
+            "This is the first page of a student's exam answer sheet. "
+            "Extract the student information from the header at the top of the page. "
+            "Return ONLY a JSON object (no extra text): "
+            '{"student_name": "...", "student_id": "...", "section": "..."}. '
+            "Use null for any field you cannot find.",
+            max_tokens=200)
+        if isinstance(data, dict):
+            return {
+                "student_name": str(data.get("student_name") or "").strip(),
+                "student_id":   str(data.get("student_id") or "").strip(),
+                "section":      str(data.get("section") or "").strip(),
+            }
+        return {}
 
     def read_answers_from_images(self, image_paths: list) -> dict:
         """Extract the official answer key from a solution image/PDF page(s)."""
@@ -331,20 +445,25 @@ class NvidiaGrader:
                     f"MODEL ANSWER: {ak.get('model_answer','')}\n"
                     f"MARKING NOTES: {ak.get('marking_notes','Standard marking.')}\n"
                     f"STUDENT ANSWER: {student_answers.get(qn,'') or '(blank)'}")
-            system_msg = GRADING_SYSTEM_PROMPT.format(subject=subject) + "\n\n" + _mode_rule(mode)
+            system_msg = (GRADING_SYSTEM_PROMPT.format(subject=subject) + "\n\n"
+                          + _mode_rule(mode) + self._lang_rule())
             user_msg = (
                 "Grade EVERY question below. Respond with ONLY this JSON (no markdown):\n"
                 '{"results":[{"number":1,"score":<0..max>,"confidence":<0..1>,'
                 '"feedback":"<1-2 sentence remark>","red_flags":[]}, ...]}\n'
                 "Give one entry per question, scoring 0 for blank answers.\n\n"
                 + "\n\n".join(blocks))
-            resp = self.client.chat.completions.create(
-                model=NVIDIA_MODEL,
-                messages=[{"role": "system", "content": system_msg},
-                          {"role": "user", "content": user_msg}],
-                temperature=AI_TEMPERATURE,
-                max_tokens=min(400 * max(1, len(questions)) + 300, 6000),
-                top_p=0.9, timeout=120.0)
+            # Tight token budget — a huge max_tokens makes the endpoint stall/timeout.
+            # Batch uses the accurate model on BOTH keys only (the fast 8B model drops
+            # questions in batch mode). Any question the batch misses is re-graded
+            # one-by-one below, where the fast model is a safe fallback.
+            resp = self._chat(
+                [{"role": "system", "content": system_msg},
+                 {"role": "user", "content": user_msg}],
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=min(160 * max(1, len(questions)) + 250, 1500),
+                timeout=22.0, allow_fast_fallback=False)
             raw = resp.choices[0].message.content.strip()
             raw = re.sub(r'^```json\s*|\s*```$', '', raw, flags=re.MULTILINE).strip()
             m = re.search(r'\{.*\}', raw, re.DOTALL)
@@ -372,25 +491,26 @@ class NvidiaGrader:
     # ── PRIVATE: NVIDIA CALL ──────────────────────────────────
 
     def _nvidia_grade(self, qnum, question, model_answer, student_answer,
-                      max_marks, subject, marking_notes, mode="normal") -> dict | None:
+                      max_marks, subject, marking_notes, mode="normal",
+                      prefer_fast=False) -> dict | None:
         try:
-            system_msg = GRADING_SYSTEM_PROMPT.format(subject=subject) + "\n\n" + _mode_rule(mode)
+            system_msg = (GRADING_SYSTEM_PROMPT.format(subject=subject) + "\n\n"
+                          + _mode_rule(mode) + self._lang_rule())
             user_msg = GRADING_USER_PROMPT.format(
                 subject=subject, qnum=qnum, question=question,
                 model_answer=model_answer, marking_notes=marking_notes,
                 student_answer=student_answer, max_marks=max_marks
             )
             
-            response = self.client.chat.completions.create(
-                model=NVIDIA_MODEL,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg}
-                ],
-                temperature=AI_TEMPERATURE,
-                max_tokens=800,
-                top_p=0.9,
-                timeout=90.0
+            response = self._chat(
+                [{"role": "system", "content": system_msg},
+                 {"role": "user", "content": user_msg}],
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=600,
+                timeout=20.0,
+                allow_fast_fallback=True,
+                prefer_fast=prefer_fast
             )
             
             raw = response.choices[0].message.content.strip()
@@ -519,11 +639,11 @@ class NvidiaGrader:
 Strong questions: {strong}. Weak questions: {weak}.
 Write 2 sentences of overall feedback for the student report. Be specific and encouraging."""
             
-            resp = self.client.chat.completions.create(
-                model=NVIDIA_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3, max_tokens=100,
-                timeout=30.0
+            resp = self._chat(
+                [{"role": "user", "content": prompt}],
+                model=self.model,
+                temperature=0.3, max_tokens=100, timeout=30.0,
+                allow_fast_fallback=True
             )
             return resp.choices[0].message.content.strip()
         except Exception:

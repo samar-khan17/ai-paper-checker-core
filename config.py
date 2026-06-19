@@ -44,8 +44,10 @@ load_dotenv(DATA_DIR / ".env", override=True)
 
 # ── NVIDIA API ───────────────────────────────────────────────
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+NVIDIA_API_KEY2 = os.getenv("NVIDIA_API_KEY2", "")  # optional backup key for failover
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.3-70b-instruct")
+NVIDIA_FAST_MODEL = os.getenv("NVIDIA_FAST_MODEL", "meta/llama-3.1-8b-instruct")
 NVIDIA_VISION_MODEL = os.getenv("NVIDIA_VISION_MODEL", "nvidia/llama-3.1-nemotron-nano-vl-8b-v1")
 AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.1"))
 

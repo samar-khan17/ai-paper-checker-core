@@ -1,4 +1,4 @@
-# database/db_manager.py — Secure SQLite Manager (matched to main.py)
+# database/db_manager.py — Secure SQLite Manager
 import sqlite3, logging, json
 from config import DB_PATH
 
@@ -94,7 +94,7 @@ class DatabaseManager:
                 timestamp    TEXT    DEFAULT CURRENT_TIMESTAMP
             );
         ''')
-        # ── lightweight migrations (add columns to existing DBs) ──
+        # Safe migrations — add new columns without touching existing data
         sub_cols = [r[1] for r in conn.execute("PRAGMA table_info(submissions)").fetchall()]
         for col, ddl in [
             ("student_name",  "ALTER TABLE submissions ADD COLUMN student_name TEXT DEFAULT ''"),
@@ -102,6 +102,9 @@ class DatabaseManager:
             ("class_section", "ALTER TABLE submissions ADD COLUMN class_section TEXT DEFAULT ''"),
             ("checking_mode", "ALTER TABLE submissions ADD COLUMN checking_mode TEXT DEFAULT 'normal'"),
             ("answer_images", "ALTER TABLE submissions ADD COLUMN answer_images TEXT DEFAULT '[]'"),
+            ("remarks",       "ALTER TABLE submissions ADD COLUMN remarks TEXT DEFAULT ''"),
+            ("row_color",     "ALTER TABLE submissions ADD COLUMN row_color TEXT DEFAULT 'white'"),
+            ("student_email", "ALTER TABLE submissions ADD COLUMN student_email TEXT DEFAULT ''"),
         ]:
             if col not in sub_cols:
                 conn.execute(ddl)
@@ -151,18 +154,15 @@ class DatabaseManager:
             conn.close()
 
     def update_paper(self, paper_id, updates):
-        if not updates:
-            return
+        if not updates: return
         allowed = {"q_paper_path","answer_key_path","marking_path","sample_path",
                    "parsed_questions","parsed_answers"}
         safe = {k: v for k, v in updates.items() if k in allowed}
-        if not safe:
-            return
+        if not safe: return
         conn = self.get_connection()
         try:
             fields = ", ".join(f"{k}=?" for k in safe)
-            conn.execute(f"UPDATE papers SET {fields} WHERE id=?",
-                         list(safe.values()) + [paper_id])
+            conn.execute(f"UPDATE papers SET {fields} WHERE id=?", list(safe.values()) + [paper_id])
             conn.commit()
         finally:
             conn.close()
@@ -186,57 +186,79 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def get_paper(self, paper_id):
+        conn = self.get_connection()
+        try:
+            row = conn.execute("SELECT * FROM papers WHERE id=?", (paper_id,)).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def delete_paper(self, paper_id):
+        conn = self.get_connection()
+        try:
+            conn.execute("UPDATE papers SET is_active=0 WHERE id=?", (paper_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
     # ── SUBMISSIONS ──────────────────────────────────────────
     def create_submission(self, student_id, paper_id, answer_path, student_name="",
                           student_roll="", class_section="", checking_mode="normal",
                           answer_images=None):
-        import json as _json
         conn = self.get_connection()
         try:
             c = conn.execute(
                 "INSERT INTO submissions (student_id,paper_id,answer_sheet_path,student_name,"
                 "student_roll,class_section,checking_mode,answer_images) VALUES (?,?,?,?,?,?,?,?)",
                 (student_id, paper_id, answer_path, student_name, student_roll,
-                 class_section, checking_mode, _json.dumps(answer_images or [])))
+                 class_section, checking_mode, json.dumps(answer_images or [])))
             conn.commit()
             return c.lastrowid
         finally:
             conn.close()
 
-    def search_submissions(self, teacher_id, query=""):
-        """Find checked submissions for this teacher's papers by roll, name, or paper id."""
+    def search_submissions(self, teacher_id, query="", section=None, sort="Newest First"):
         conn = self.get_connection()
         try:
-            q = f"%{query.strip()}%"
-            rows = conn.execute('''
+            q = f"%{(query or '').strip()}%"
+            section_filter = " AND s.class_section = ?" if section else ""
+            sort_map = {
+                "Newest First":   "s.submitted_at DESC",
+                "Oldest First":   "s.submitted_at ASC",
+                "Marks High→Low": "COALESCE(r.percentage, -1) DESC",
+                "Marks Low→High": "COALESCE(r.percentage, 999) ASC",
+                "Name A-Z":       "LOWER(s.student_name) ASC",
+            }
+            order = sort_map.get(sort, "s.submitted_at DESC")
+            params = [teacher_id, q, q, q, q]
+            if section:
+                params.append(section)
+            rows = conn.execute(f'''
                 SELECT s.id, s.student_name, s.student_roll, s.class_section, s.checking_mode,
-                       s.submitted_at, s.status, p.id as paper_id, p.title as paper_title,
-                       p.subject, r.total_score, r.total_max, r.percentage, r.grade
+                       s.submitted_at, s.status, s.remarks, s.row_color, s.student_email,
+                       p.id as paper_id, p.title as paper_title, p.subject,
+                       r.total_score, r.total_max, r.percentage, r.grade
                 FROM submissions s
                 JOIN papers p ON s.paper_id=p.id
                 LEFT JOIN results r ON r.submission_id=s.id
                 WHERE p.teacher_id=? AND (
                       s.student_name LIKE ? OR s.student_roll LIKE ?
                       OR CAST(p.id AS TEXT) LIKE ? OR p.title LIKE ?)
-                ORDER BY s.submitted_at DESC''',
-                (teacher_id, q, q, q, q)).fetchall()
+                {section_filter}
+                ORDER BY {order}''', params).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
 
     def get_submission(self, submission_id):
-        """Full submission row incl. parsed answer_images list."""
-        import json as _json
         conn = self.get_connection()
         try:
             row = conn.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
-            if not row:
-                return None
+            if not row: return None
             d = dict(row)
-            try:
-                d["answer_images"] = _json.loads(d.get("answer_images") or "[]")
-            except Exception:
-                d["answer_images"] = []
+            try: d["answer_images"] = json.loads(d.get("answer_images") or "[]")
+            except Exception: d["answer_images"] = []
             return d
         finally:
             conn.close()
@@ -245,6 +267,40 @@ class DatabaseManager:
         conn = self.get_connection()
         try:
             conn.execute("UPDATE submissions SET status=? WHERE id=?", (status, submission_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_submission_remarks(self, submission_id, remarks, row_color):
+        conn = self.get_connection()
+        try:
+            conn.execute("UPDATE submissions SET remarks=?, row_color=? WHERE id=?",
+                         (remarks, row_color, submission_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_submission_info(self, submission_id, name, roll, section, email=None):
+        conn = self.get_connection()
+        try:
+            if email is None:
+                conn.execute(
+                    "UPDATE submissions SET student_name=?, student_roll=?, class_section=? WHERE id=?",
+                    (name, roll, section, submission_id))
+            else:
+                conn.execute(
+                    "UPDATE submissions SET student_name=?, student_roll=?, class_section=?, "
+                    "student_email=? WHERE id=?",
+                    (name, roll, section, email, submission_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_submission(self, submission_id):
+        conn = self.get_connection()
+        try:
+            conn.execute("DELETE FROM results WHERE submission_id=?", (submission_id,))
+            conn.execute("DELETE FROM submissions WHERE id=?", (submission_id,))
             conn.commit()
         finally:
             conn.close()
@@ -260,8 +316,7 @@ class DatabaseManager:
             for r in rows:
                 d = dict(r)
                 acct = d.pop("_acct_name", "")
-                if not d.get("student_name"):
-                    d["student_name"] = acct
+                if not d.get("student_name"): d["student_name"] = acct
                 d["student_roll"] = d.get("student_roll") or ""
                 out.append(d)
             return out
@@ -269,18 +324,16 @@ class DatabaseManager:
             conn.close()
 
     def get_submission_meta(self, submission_id):
-        """Name / roll / paper title / subject for one submission (for reports)."""
         conn = self.get_connection()
         try:
             row = conn.execute('''
-                SELECT s.student_name, s.student_roll, s.answer_sheet_path,
+                SELECT s.student_name, s.student_roll, s.answer_sheet_path, s.remarks,
                        u.full_name as acct_name, p.title as paper_title, p.subject
                 FROM submissions s
                 JOIN users u ON s.student_id=u.id
                 JOIN papers p ON s.paper_id=p.id
                 WHERE s.id=?''', (submission_id,)).fetchone()
-            if not row:
-                return {}
+            if not row: return {}
             d = dict(row)
             d["student_name"] = d.get("student_name") or d.get("acct_name") or ""
             d["student_roll"] = d.get("student_roll") or ""
@@ -299,6 +352,65 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    # ── STATS ────────────────────────────────────────────────
+    def stats_for_teacher(self, teacher_id):
+        conn = self.get_connection()
+        try:
+            papers = conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE teacher_id=? AND is_active=1",
+                (teacher_id,)).fetchone()[0]
+            checked = conn.execute('''
+                SELECT COUNT(*) FROM submissions s
+                JOIN papers p ON s.paper_id=p.id
+                JOIN results r ON r.submission_id=s.id
+                WHERE p.teacher_id=?''', (teacher_id,)).fetchone()[0]
+            students = conn.execute('''
+                SELECT COUNT(DISTINCT COALESCE(NULLIF(s.student_roll,''), CAST(s.id AS TEXT)))
+                FROM submissions s JOIN papers p ON s.paper_id=p.id
+                WHERE p.teacher_id=?''', (teacher_id,)).fetchone()[0]
+            avg_row = conn.execute('''
+                SELECT AVG(r.percentage) FROM results r
+                JOIN submissions s ON r.submission_id=s.id
+                JOIN papers p ON s.paper_id=p.id
+                WHERE p.teacher_id=?''', (teacher_id,)).fetchone()[0]
+            return {"papers": papers, "checked": checked,
+                    "students": students, "avg": round(avg_row or 0, 1)}
+        finally:
+            conn.close()
+
+    def get_sections(self, teacher_id):
+        conn = self.get_connection()
+        try:
+            rows = conn.execute('''
+                SELECT DISTINCT s.class_section
+                FROM submissions s JOIN papers p ON s.paper_id=p.id
+                WHERE p.teacher_id=? AND s.class_section IS NOT NULL AND s.class_section != ''
+                ORDER BY s.class_section''', (teacher_id,)).fetchall()
+            return [r[0] for r in rows]
+        finally:
+            conn.close()
+
+    def section_stats(self, teacher_id, section):
+        conn = self.get_connection()
+        try:
+            rows = conn.execute('''
+                SELECT r.percentage FROM results r
+                JOIN submissions s ON r.submission_id=s.id
+                JOIN papers p ON s.paper_id=p.id
+                WHERE p.teacher_id=? AND s.class_section=?''', (teacher_id, section)).fetchall()
+            pcts = [r[0] for r in rows if r[0] is not None]
+            if not pcts:
+                return {"count": 0, "avg": 0, "highest": 0, "pass_rate": 0}
+            count = len(pcts)
+            return {
+                "count": count,
+                "avg": round(sum(pcts) / count, 1),
+                "highest": round(max(pcts), 1),
+                "pass_rate": round(sum(1 for p in pcts if p >= 50) / count * 100, 1),
+            }
+        finally:
+            conn.close()
+
     # ── RESULTS ──────────────────────────────────────────────
     def save_result(self, submission_id, result):
         conn = self.get_connection()
@@ -309,10 +421,8 @@ class DatabaseManager:
                  question_results,summary_feedback,red_flags,overall_confidence,needs_review)
                 VALUES (?,?,?,?,?,?,?,?,?,?)''', (
                 submission_id,
-                result.get("total_score", 0),
-                result.get("total_max", 100),
-                result.get("percentage", 0),
-                result.get("grade", "F"),
+                result.get("total_score", 0), result.get("total_max", 100),
+                result.get("percentage", 0), result.get("grade", "F"),
                 json.dumps(result.get("question_results", {})),
                 result.get("summary_feedback", ""),
                 json.dumps(result.get("all_red_flags", [])),
@@ -323,13 +433,21 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def delete_result(self, submission_id):
+        """Remove a result so it can be re-graded and re-saved."""
+        conn = self.get_connection()
+        try:
+            conn.execute("DELETE FROM results WHERE submission_id=?", (submission_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def get_result_by_submission(self, submission_id):
         conn = self.get_connection()
         try:
             row = conn.execute(
                 "SELECT * FROM results WHERE submission_id=?", (submission_id,)).fetchone()
-            if not row:
-                return None
+            if not row: return None
             res = dict(row)
             res["question_results"] = json.loads(res.get("question_results") or "{}")
             res["red_flags"] = json.loads(res.get("red_flags") or "[]")
@@ -409,8 +527,7 @@ class DatabaseManager:
     def _grade(self, pct):
         for t, g in [(90,"A+"),(85,"A"),(80,"A-"),(75,"B+"),(70,"B"),
                      (65,"B-"),(60,"C+"),(55,"C"),(50,"D"),(0,"F")]:
-            if pct >= t:
-                return g
+            if pct >= t: return g
         return "F"
 
 

@@ -33,9 +33,10 @@ class SmartPaperApp(ctk.CTk):
         self.show_dashboard()
 
     def logout(self):
-        from core.security import session_manager
+        # CODE FIX: Align with the backend session contract alias
+        from core.security import sessions
         if self.current_token:
-            session_manager.destroy_session(self.current_token)
+            sessions.destroy(self.current_token)
         self.current_user = None
         self.current_token = None
         self.show_login()

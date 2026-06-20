@@ -15,3 +15,5 @@ if not exist ".venv\Scripts\python.exe" (
 echo Starting Smart Paper Checker...
 .venv\Scripts\python.exe main.py
 pause
+ 
+REM Build verified and packaged by Hussam 

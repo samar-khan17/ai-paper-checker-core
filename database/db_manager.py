@@ -154,18 +154,15 @@ class DatabaseManager:
             conn.close()
 
     def update_paper(self, paper_id, updates):
-        if not updates:
-            return
+        if not updates: return
         allowed = {"q_paper_path","answer_key_path","marking_path","sample_path",
                    "parsed_questions","parsed_answers"}
         safe = {k: v for k, v in updates.items() if k in allowed}
-        if not safe:
-            return
+        if not safe: return
         conn = self.get_connection()
         try:
             fields = ", ".join(f"{k}=?" for k in safe)
-            conn.execute(f"UPDATE papers SET {fields} WHERE id=?",
-                         list(safe.values()) + [paper_id])
+            conn.execute(f"UPDATE papers SET {fields} WHERE id=?", list(safe.values()) + [paper_id])
             conn.commit()
         finally:
             conn.close()
@@ -209,14 +206,13 @@ class DatabaseManager:
     def create_submission(self, student_id, paper_id, answer_path, student_name="",
                           student_roll="", class_section="", checking_mode="normal",
                           answer_images=None):
-        import json as _json
         conn = self.get_connection()
         try:
             c = conn.execute(
                 "INSERT INTO submissions (student_id,paper_id,answer_sheet_path,student_name,"
                 "student_roll,class_section,checking_mode,answer_images) VALUES (?,?,?,?,?,?,?,?)",
                 (student_id, paper_id, answer_path, student_name, student_roll,
-                 class_section, checking_mode, _json.dumps(answer_images or [])))
+                 class_section, checking_mode, json.dumps(answer_images or [])))
             conn.commit()
             return c.lastrowid
         finally:
@@ -249,25 +245,20 @@ class DatabaseManager:
                 WHERE p.teacher_id=? AND (
                       s.student_name LIKE ? OR s.student_roll LIKE ?
                       OR CAST(p.id AS TEXT) LIKE ? OR p.title LIKE ?)
-                ORDER BY s.submitted_at DESC''',
-                (teacher_id, q, q, q, q)).fetchall()
+                {section_filter}
+                ORDER BY {order}''', params).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
 
     def get_submission(self, submission_id):
-        """Full submission row incl. parsed answer_images list."""
-        import json as _json
         conn = self.get_connection()
         try:
             row = conn.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone()
-            if not row:
-                return None
+            if not row: return None
             d = dict(row)
-            try:
-                d["answer_images"] = _json.loads(d.get("answer_images") or "[]")
-            except Exception:
-                d["answer_images"] = []
+            try: d["answer_images"] = json.loads(d.get("answer_images") or "[]")
+            except Exception: d["answer_images"] = []
             return d
         finally:
             conn.close()
@@ -325,8 +316,7 @@ class DatabaseManager:
             for r in rows:
                 d = dict(r)
                 acct = d.pop("_acct_name", "")
-                if not d.get("student_name"):
-                    d["student_name"] = acct
+                if not d.get("student_name"): d["student_name"] = acct
                 d["student_roll"] = d.get("student_roll") or ""
                 out.append(d)
             return out
@@ -334,7 +324,6 @@ class DatabaseManager:
             conn.close()
 
     def get_submission_meta(self, submission_id):
-        """Name / roll / paper title / subject for one submission (for reports)."""
         conn = self.get_connection()
         try:
             row = conn.execute('''
@@ -344,8 +333,7 @@ class DatabaseManager:
                 JOIN users u ON s.student_id=u.id
                 JOIN papers p ON s.paper_id=p.id
                 WHERE s.id=?''', (submission_id,)).fetchone()
-            if not row:
-                return {}
+            if not row: return {}
             d = dict(row)
             d["student_name"] = d.get("student_name") or d.get("acct_name") or ""
             d["student_roll"] = d.get("student_roll") or ""
@@ -433,10 +421,8 @@ class DatabaseManager:
                  question_results,summary_feedback,red_flags,overall_confidence,needs_review)
                 VALUES (?,?,?,?,?,?,?,?,?,?)''', (
                 submission_id,
-                result.get("total_score", 0),
-                result.get("total_max", 100),
-                result.get("percentage", 0),
-                result.get("grade", "F"),
+                result.get("total_score", 0), result.get("total_max", 100),
+                result.get("percentage", 0), result.get("grade", "F"),
                 json.dumps(result.get("question_results", {})),
                 result.get("summary_feedback", ""),
                 json.dumps(result.get("all_red_flags", [])),
@@ -461,8 +447,7 @@ class DatabaseManager:
         try:
             row = conn.execute(
                 "SELECT * FROM results WHERE submission_id=?", (submission_id,)).fetchone()
-            if not row:
-                return None
+            if not row: return None
             res = dict(row)
             res["question_results"] = json.loads(res.get("question_results") or "{}")
             res["red_flags"] = json.loads(res.get("red_flags") or "[]")
@@ -542,8 +527,7 @@ class DatabaseManager:
     def _grade(self, pct):
         for t, g in [(90,"A+"),(85,"A"),(80,"A-"),(75,"B+"),(70,"B"),
                      (65,"B-"),(60,"C+"),(55,"C"),(50,"D"),(0,"F")]:
-            if pct >= t:
-                return g
+            if pct >= t: return g
         return "F"
 
 

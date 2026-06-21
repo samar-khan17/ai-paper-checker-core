@@ -1,3 +1,14 @@
+# ============================================================
+#  Smart Paper Checker — PyInstaller Spec File
+#  Defines how main.py and its dependencies are bundled into
+#  a single standalone .exe for distribution.
+#  Owner: Hussam (Build & Distribution)
+#
+#  Key sections:
+#   Analysis   - entry point, hidden imports, data files
+#   PYZ        - compressed Python bytecode archive
+#   EXE        - final executable build settings (icon, console)
+# ============================================================
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_all

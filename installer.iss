@@ -1,4 +1,14 @@
 ; ============================================================
+;  Smart Paper Checker — Inno Setup Installer Script
+;  Builds a single Windows installer (.exe) for distribution.
+;  Owner: Hussam (Build & Distribution)
+;
+;  Sections:
+;   [Setup]    - App metadata, install paths, output settings
+;   [Files]    - Files bundled into the installer
+;   [Icons]    - Start Menu / Desktop shortcuts
+;   [Run]      - Post-install actions (e.g. launch app)
+; ============================================================; ============================================================
 ;  Smart Paper Checker - Inno Setup installer script
 ;  Produces a single SmartPaperChecker_Setup.exe that installs
 ;  the app (Program Files), with Start Menu + Desktop shortcuts

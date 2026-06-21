@@ -1,0 +1,34 @@
+﻿=============================================
+  MAHAM - CONFIGURATION & DOCS UPDATE
+=============================================
+GitHub Username: f2024408114-del
+Branch: maham/config-docs
+
+WHAT CHANGED IN YOUR SECTION:
+- .env.example: UPDATED — now includes NVIDIA_API_KEY2 and NVIDIA_FAST_MODEL fields
+  (the real .env is NEVER pushed — only this example file goes to GitHub)
+- README.md: should be updated to mention new features (email, analytics, dual key)
+- LICENSE: NEW FILE — MIT license added (this MUST be pushed)
+- CLAUDE_CODE_PROMPT.md: may need updating to reflect new features
+- app_icon.ico: unchanged
+
+YOUR FILES IN THIS FOLDER:
+  .env.example        — UPDATED (push this — no real API keys inside)
+  LICENSE             — NEW FILE (push this)
+  README.md           — review and push
+  CLAUDE_CODE_PROMPT.md — review and push
+  app_icon.ico        — no changes
+
+IMPORTANT: NEVER push the real .env file. Only .env.example goes to GitHub.
+
+STEPS TO PUSH YOUR FILES:
+1. Open Git Bash or PowerShell
+2. cd to your local clone of the repo
+3. git checkout maham/config-docs
+4. Copy files from this folder into your repo
+5. git add .env.example LICENSE README.md CLAUDE_CODE_PROMPT.md
+6. git commit -m "Add MIT license, update .env.example with dual API key fields"
+7. git push origin maham/config-docs
+8. Contact Samar Khan if you need help
+
+=============================================

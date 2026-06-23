@@ -1,7 +1,7 @@
 # ui/screens/login_screen.py — Secure Login with brute force protection
 import customtkinter as ctk
-from core.security import (login_tracker, session_manager, 
-                            password_manager, sanitizer, audit)
+# CODE FIX: Import unified backend security modules
+from core.security import tracker, sessions, pwd_mgr, sanitizer
 from database.db_manager import DatabaseManager
 
 class LoginScreen(ctk.CTkFrame):
@@ -99,40 +99,40 @@ class LoginScreen(ctk.CTkFrame):
             self.error_label.configure(text="Please enter username and password.")
             return
 
-        # Check lockout
-        locked, mins = login_tracker.is_locked(username)
+        # CODE FIX: Map directly to verified tracker properties
+        locked, mins = tracker.is_locked(username)
         if locked:
             self.error_label.configure(
                 text=f"Account locked. Try again in {mins} minute(s)."
             )
             return
 
-        # Fetch user
-        user = self.db.get_user_by_username(username)
+        # CODE FIX: Changed get_user_by_username to get_user
+        user = self.db.get_user(username)
         if not user or user["role"] != role:
-            login_tracker.record_attempt(username, success=False)
-            remaining = login_tracker.attempts_remaining(username)
+            tracker.record(username, False)
+            remaining = tracker.remaining(username)
             self.error_label.configure(
                 text=f"Invalid credentials. {remaining} attempt(s) remaining."
             )
-            audit.log("LOGIN_FAILED", username, f"role={role}")
+            self.db.log_audit("LOGIN_FAILED", username, f"role={role}")
             return
 
-        # Verify password
-        if not password_manager.verify_password(password, user["password_hash"]):
-            login_tracker.record_attempt(username, success=False)
-            remaining = login_tracker.attempts_remaining(username)
+        # CODE FIX: Swapped out password_manager with pwd_mgr module properties
+        if not pwd_mgr.verify_password(password, user["password_hash"]):
+            tracker.record(username, False)
+            remaining = tracker.remaining(username)
             self.error_label.configure(
                 text=f"Invalid credentials. {remaining} attempt(s) remaining."
             )
-            audit.log("LOGIN_FAILED", username, "wrong password")
+            self.db.log_audit("LOGIN_FAILED", username, "wrong password")
             return
 
-        # Success
-        login_tracker.record_attempt(username, success=True)
-        self.db.update_last_login(user["id"])
-        token = session_manager.create_session(dict(user))
-        audit.log("LOGIN_SUCCESS", username, f"role={role}")
+        # CODE FIX: Updated success trackers, timestamps, and session routing aliases
+        tracker.record(username, True)
+        self.db.touch_login(user["id"])
+        token = sessions.create(dict(user))
+        self.db.log_audit("LOGIN_SUCCESS", username, f"role={role}")
         self.app.login_success(dict(user), token)
 
     def _show_register(self):
@@ -174,16 +174,16 @@ class LoginScreen(ctk.CTkFrame):
             name = sanitizer.sanitize_text(fields["Full Name"].get())
             uname = sanitizer.sanitize_username(fields["Username"].get())
             pw = fields["Password"].get()
-            email = sanitizer.sanitize_text(fields["Email (optional)"].get(), 100)
             role = role_v.get()
 
             if not name or not uname or not pw:
                 msg.configure(text="Name, username, and password are required.", text_color="#ef4444")
                 return
             try:
-                pw_hash = password_manager.hash_password(pw)
-                self.db.create_user(uname, pw_hash, role, name, email)
-                audit.log("REGISTER", uname, f"role={role}")
+                # CODE FIX: Map password checking and entry signatures to backend definitions
+                pw_hash = pwd_mgr.hash_password(pw)
+                self.db.create_user(uname, pw_hash, role, name)
+                self.db.log_audit("REGISTER", uname, f"role={role}")
                 msg.configure(text="✅ Account created! You can now login.", text_color="#22c55e")
             except ValueError as ve:
                 msg.configure(text=str(ve), text_color="#ef4444")
